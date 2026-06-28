@@ -58,17 +58,6 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
     return emb
 
-class Derf(nn.Module):
-    def __init__(self, num_channels: int, alpha_init: float = 0.5, s_init: float = 0.0):
-        super().__init__()
-        self.alpha = nn.Parameter(torch.full((num_channels,), alpha_init))
-        self.s = nn.Parameter(torch.full((num_channels,), s_init))
-        self.gamma = nn.Parameter(torch.ones(num_channels))
-        self.beta = nn.Parameter(torch.zeros(num_channels))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.erf(self.alpha * x + self.s) * self.gamma + self.beta
-
 class TimestepEmbedder(nn.Module):
     """
     Embeds scalar timesteps into vector representations.
@@ -115,9 +104,9 @@ class DiTBlock(nn.Module):
     """
     def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, **block_kwargs):
         super().__init__()
-        self.norm1 =  Derf(hidden_size)
+        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.attn = Attention(hidden_size, num_heads, **block_kwargs)
-        self.norm2 = Derf(hidden_size)
+        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         mlp_hidden_size = int(hidden_size * mlp_ratio)
         self.mlp = nn.Sequential(
             nn.Linear(hidden_size, mlp_hidden_size),
@@ -141,7 +130,7 @@ class FinalLayer(nn.Module):
     """
     def __init__(self, hidden_size, patch_size, out_channels):
         super().__init__()
-        self.norm = Derf(hidden_size)
+        self.norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
@@ -164,8 +153,14 @@ class SudokuDiT(nn.Module):
         self.grid_size = grid_size
         self.patch_size = 1
         self.num_patches = grid_size * grid_size
-        self.square_embed = nn.Embedding(self.num_patches + 1, hidden_size)  # +1 for the empty square
+        # vocab = grid_size digits (1..9) + 1 for the MASK/empty token (0)
+        self.square_embed = nn.Embedding(grid_size + 1, hidden_size)
         self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, hidden_size), requires_grad=False)
+
+        # explicit 3x3 box membership: gives the model Sudoku's box constraint
+        # for free instead of forcing it to rediscover boxes from row/col alone.
+        self.register_buffer("box_ids", self._box_ids(grid_size), persistent=False)
+        self.box_embed = nn.Embedding(grid_size, hidden_size)
 
         self.timestep_embedder = TimestepEmbedder(hidden_size)
         self.blocks = nn.ModuleList([
@@ -173,6 +168,14 @@ class SudokuDiT(nn.Module):
         ])
         self.final_layer = FinalLayer(hidden_size, self.patch_size, self.grid_size)
         self.initialize_weights()
+
+    @staticmethod
+    def _box_ids(grid_size: int) -> torch.Tensor:
+        """Map each cell (row-major, 0..grid_size**2-1) to its 3x3 box id (1, N)."""
+        b = int(grid_size ** 0.5)
+        idx = torch.arange(grid_size * grid_size)
+        row, col = idx // grid_size, idx % grid_size
+        return ((row // b) * b + (col // b)).long().unsqueeze(0)
 
     def initialize_weights(self):
         # Basic init for all Linear layers: xavier uniform weight, zero bias
@@ -189,6 +192,7 @@ class SudokuDiT(nn.Module):
 
         # Embeddings: normal with small std
         nn.init.normal_(self.square_embed.weight, std=0.02)
+        nn.init.normal_(self.box_embed.weight, std=0.02)
 
         # Timestep embedder MLP
         nn.init.normal_(self.timestep_embedder.mlp[0].weight, std=0.02)
@@ -210,8 +214,8 @@ class SudokuDiT(nn.Module):
         x: (B, 81) tensor of Sudoku puzzles, with values in [0, 9]
         t: (B,) tensor of timesteps
         """
-        # Embed the squares
-        x = self.square_embed(x)  + self.pos_embed # (B, 81, hidden_size)
+        # Embed the squares: token + row/col position + 3x3 box membership
+        x = self.square_embed(x) + self.pos_embed + self.box_embed(self.box_ids)  # (B, 81, hidden_size)
         # Embed the timesteps
         t_emb = self.timestep_embedder(t)  # (B, hidden_size)
         # Pass through the blocks
