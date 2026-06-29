@@ -13,6 +13,7 @@ import argparse
 import glob
 import json
 import os
+import shutil
 import tempfile
 
 import torch
@@ -20,37 +21,76 @@ import torch
 from nonet.hub import CONFIG_FILE, DEFAULT_REPO, WEIGHTS_FILE, config_from_state_dict
 
 CARD = """---
-library_name: nonet
+license: apache-2.0
 pipeline_tag: other
-tags: [sudoku, masked-diffusion, diffusion-transformer, dit]
+library_name: pytorch
+tags:
+  - sudoku
+  - masked-diffusion
+  - diffusion-transformer
+  - dit
+datasets:
+  - Ritvik19/Sudoku-Dataset
 ---
 
-# SudokuDiT — masked-diffusion Sudoku solver
+# SudokuDiT
 
-A small Diffusion Transformer ({params:.2f}M params, `hidden={hidden_size}`,
-`heads={num_heads}`, `blocks={num_blocks}`) trained as a discrete denoiser (MDLM-style)
-that solves Sudoku by iteratively un-masking the most-confident cells. See the
-[`nonet`](https://github.com/tchauffi/nonet) repository for training and the web demo.
+A compact **Diffusion Transformer (NPARAMS M params)** that solves Sudoku as a
+**masked discrete diffusion** (MDLM-style) denoiser: it fills a puzzle by iteratively
+un-masking the cells it is most confident about, MaskGIT-style.
+
+![watch it solve](solve.gif)
+
+- **Architecture:** DiT with adaLN-Zero conditioning — `hidden=HIDDEN`, `heads=HEADS`,
+  `blocks=BLOCKS`; per-cell token + 2-D positional + 3x3-box embeddings, plus a timestep.
+- **Code, training and an interactive web demo:** <https://github.com/tchauffi/nonet>
+
+## Input / output
+
+A board is **81 tokens, row-major**: `0` = empty / `[MASK]`, `1..9` = digits. The solver
+clamps the given clues and only fills the blanks.
 
 ## Usage
 
 ```python
-from nonet.hub import load_solver
 import torch
+from nonet.hub import load_solver   # pip install git+https://github.com/tchauffi/nonet
 
-solver = load_solver("{repo}")                      # downloads weights + config
-puzzle = torch.tensor([[int(c) for c in puzzle_str]])  # (1, 81), 0 = blank
-solution = solver.solve(puzzle, conf_threshold=0.999)  # adaptive reveal
+solver = load_solver("REPO_ID")     # downloads model.safetensors + config.json
+puzzle = "417000800030005900800000000050000600000700020000000000000060054000200000000000003"
+x = torch.tensor([[int(c) for c in puzzle]])      # (1, 81)
+solution = solver.solve(x, conf_threshold=0.999)  # adaptive reveal (recommended)
+# fixed-budget alternative: solver.solve(x, num_steps=81)
 ```
 
 ## Performance
 
-Evaluated on held-out validation puzzles with the adaptive decoder (τ=0.999):
-**99.8% valid solutions**, averaging ~3.6 reveal steps (easy boards in 1 step, the
-hard 60+ blank tail in ~50). `exact_match` vs the reference is lower (~94%) only
-because the dataset's high-blank puzzles aren't all uniquely solvable.
+Held-out validation puzzles, adaptive decoder (tau = 0.999):
 
-Input tokens: `0` = empty/`[MASK]`, `1..9` = digits, row-major over the 9×9 grid.
+| metric | value |
+|--------|-------|
+| valid solutions | **99.8 %** |
+| exact match vs reference | 94.3 % |
+| avg reveal steps / puzzle | 3.6 |
+
+Solve rate is 100 % up to ~39 blanks and ~98 % on the hard 50+ blank tail (where the adaptive
+decoder spends more steps). `exact_match` is lower than `valid` only because the dataset's
+high-blank puzzles aren't always uniquely solvable, so the model may return a *different*
+valid grid.
+
+## Training
+
+- Data: [`Ritvik19/Sudoku-Dataset`](https://huggingface.co/datasets/Ritvik19/Sudoku-Dataset)
+  (~17 M puzzles), tokenized on the fly.
+- Objective: masked cross-entropy over masked cells, conditional (given clues are never
+  masked), with a linear masking schedule.
+- ~50 k steps, AdamW, batch 256. Kept deliberately small — larger models sit at the entropy
+  floor far longer before the loss breaks through.
+
+## Limitations
+
+- Not a guaranteed solver: a small fraction of very hard (60+ blank) boards come out invalid.
+- Trained only on standard 9x9 Sudoku from the dataset above.
 """
 
 
@@ -73,13 +113,22 @@ def main():
 
     create_repo(args.repo, exist_ok=True, private=args.private)
     api = HfApi()
+    card = (CARD.replace("REPO_ID", args.repo).replace("NPARAMS", f"{params:.2f}")
+                .replace("HIDDEN", str(cfg["hidden_size"]))
+                .replace("HEADS", str(cfg["num_heads"]))
+                .replace("BLOCKS", str(cfg["num_blocks"])))
     with tempfile.TemporaryDirectory() as d:
         save_file(sd, os.path.join(d, WEIGHTS_FILE))
         with open(os.path.join(d, CONFIG_FILE), "w") as f:
             json.dump(cfg, f, indent=2)
+        gif = "assets/iterative_solve.gif"
+        if os.path.exists(gif):
+            shutil.copyfile(gif, os.path.join(d, "solve.gif"))
+        else:
+            card = card.replace("![watch it solve](solve.gif)\n\n", "")
         with open(os.path.join(d, "README.md"), "w") as f:
-            f.write(CARD.format(repo=args.repo, params=params, **cfg))
-        api.upload_folder(repo_id=args.repo, folder_path=d, commit_message="Upload SudokuDiT")
+            f.write(card)
+        api.upload_folder(repo_id=args.repo, folder_path=d, commit_message="Update SudokuDiT card + assets")
     print(f"\n  ▸ pushed to https://huggingface.co/{args.repo}")
 
 
