@@ -9,6 +9,9 @@ randomly masks cells of a *solved* board and asks the model to recover them; sol
 that process in reverse, revealing cells from most- to least-confident until the grid is
 full.
 
+**▶ [Live demo](https://tchauffi.github.io/nonet/)** — the model runs entirely in your browser
+(ONNX + WebAssembly), no server.
+
 ![SudokuDiT solving a puzzle, cell by cell](assets/iterative_solve.gif)
 
 *Cells are tinted by the model's confidence (blue = unsure → green = sure); given clues stay
@@ -116,6 +119,26 @@ A single self-contained page (Python stdlib server only) that animates the solve
 
 Useful flags: `--hf-repo` (Hub repo to load), `--ckpt` (local checkpoint instead),
 `--pool-size`, `--min-blank` / `--max-blank` (default keeps the full difficulty range).
+
+### Browser demo (ONNX, no server)
+
+`web/` is a [Next.js](https://nextjs.org) static site that runs the model **fully client-side**
+with [onnxruntime-web](https://onnxruntime.ai/docs/tutorials/web/): the denoiser is exported to
+ONNX (`scripts/export_onnx.py`) and the confidence-first decode loop is reimplemented in
+TypeScript (`web/lib/solver.ts`, a port of `SudokuSolver.solve`). You can pick a puzzle from the
+bundled pool or **enter your own** — click a cell and type, or paste an 81-character board (with
+`0`/`.` for blanks). It's deployed to GitHub Pages by `.github/workflows/deploy.yml` on every push
+to `main` that touches `web/`.
+
+```bash
+uv run python scripts/export_onnx.py     # -> web/public/sudoku_dit.onnx (run after retraining)
+cd web && npm install && npm run dev      # http://localhost:3000
+npm run build                             # static export -> web/out/
+```
+
+To enable hosting: in the GitHub repo, **Settings → Pages → Build and deployment → Source =
+GitHub Actions** (the workflow does the rest). The site is served under `/nonet`, set via
+`basePath` in `web/next.config.mjs` — change it if you fork to a different repo name.
 
 ### Solving programmatically
 

@@ -29,4 +29,6 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.1.1",
     "pillow>=10.0.0",
+    "onnx>=1.22.0",
+    "onnxruntime>=1.27.0",
 ]
