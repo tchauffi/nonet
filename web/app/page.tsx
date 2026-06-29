@@ -14,6 +14,23 @@ function tint(p: number): string {
   return `hsl(${222 - 72 * n} ${50 + 8 * n}% ${26 + 6 * n}%)`;
 }
 
+// a brighter variant of the same blue->green ramp, for text/bars on a dark bg
+function tintBright(p: number): string {
+  const n = Math.min(Math.max((p - 0.6) / 0.4, 0), 1);
+  return `hsl(${222 - 72 * n} 70% 64%)`;
+}
+
+// a plausible 9-way softmax peaked at digit d with mass `conf` — for the schema's
+// "estimate" bars (the real per-cell distribution comes from the model).
+function distFor(d: number, conf: number): number[] {
+  const p = new Array(9).fill(0);
+  p[d - 1] = conf;
+  const rest = 1 - conf;
+  p[d % 9] += rest * 0.6; // a near-miss digit
+  p[(d + 3) % 9] += rest * 0.4; // and another
+  return p;
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ---- "how it works" schematic: a tiny 3x3 illustration of the decode loop ----
@@ -497,82 +514,143 @@ function NumberPad({
   );
 }
 
-// Looping schematic of the solve: each cycle scores the empty cells, then
-// reveals the most-confident one — exactly what the real decoder does.
+// Paper-style data-flow figure of a single forward pass:
+// input board -> SudokuDiT -> per-cell softmax p(digit) -> argmax prediction.
+// Animated by cycling which masked cell is being "queried"; already-decided
+// cells stay filled, so it also conveys the most-confident-first reveal order.
 function HowItWorks() {
   const L = SCHEMA_STEPS.length;
-  const [s, setS] = useState<{ m: number; phase: 'predict' | 'reveal' }>({ m: 0, phase: 'predict' });
+  const [k, setK] = useState(0);
 
   useEffect(() => {
     const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     if (reduce) {
-      setS({ m: L, phase: 'reveal' }); // show the finished grid, no motion
+      setK(L); // show the finished grid, no motion
       return;
     }
-    const id = setInterval(() => {
-      setS((p) => {
-        if (p.m >= L) return { m: 0, phase: 'predict' }; // restart after the hold
-        if (p.phase === 'predict') return { m: p.m, phase: 'reveal' };
-        return { m: p.m + 1, phase: 'predict' };
-      });
-    }, 760);
+    const id = setInterval(() => setK((p) => (p >= L ? 0 : p + 1)), 1500);
     return () => clearInterval(id);
   }, [L]);
 
-  const solved = s.m >= L;
+  const solved = k >= L;
+  const active = Math.min(k, L - 1);
+  const step = SCHEMA_STEPS[active];
+  const probs = distFor(step.d, step.conf);
 
   return (
-    <section className="schema" aria-label="how the model works">
-      <div className="schema-grid" aria-hidden="true">
-        {Array.from({ length: 9 }, (_, i) => {
-          if (i in SCHEMA_GIVEN) {
-            return (
-              <div key={i} className="scell given">
-                {SCHEMA_GIVEN[i]}
-              </div>
-            );
-          }
-          const k = SCHEMA_STEPS.findIndex((x) => x.i === i);
-          const { d, conf } = SCHEMA_STEPS[k];
-          const revealed = solved || k < s.m || (k === s.m && s.phase === 'reveal');
-          const candidate = !revealed && k === s.m && s.phase === 'predict';
-          const cls = ['scell', revealed ? 'filled' : 'masked'];
-          if (candidate) cls.push('cand');
-          return (
-            <div
-              key={i}
-              className={cls.join(' ')}
-              style={{ background: tint(conf), opacity: revealed || candidate ? 1 : 0.4 }}
-            >
-              {revealed ? d : '?'}
+    <section className="schema" aria-label="how the model maps a board to a digit">
+      <div className="schema-head">A single forward pass — how the denoiser reads a board and estimates a digit</div>
+
+      <div className="arch">
+        {/* input board */}
+        <div className="stage">
+          <div className="schema-grid" aria-hidden="true">
+            {Array.from({ length: 9 }, (_, i) => {
+              if (i in SCHEMA_GIVEN) {
+                return (
+                  <div key={i} className="scell given">
+                    {SCHEMA_GIVEN[i]}
+                  </div>
+                );
+              }
+              const oi = SCHEMA_STEPS.findIndex((x) => x.i === i);
+              const revealed = solved || oi < k;
+              const queried = !solved && oi === k;
+              const cls = ['scell', revealed ? 'filled' : 'masked'];
+              if (queried) cls.push('cand');
+              return (
+                <div
+                  key={i}
+                  className={cls.join(' ')}
+                  style={{ background: tint(SCHEMA_STEPS[oi].conf), opacity: revealed || queried ? 1 : 0.4 }}
+                >
+                  {revealed ? SCHEMA_STEPS[oi].d : '?'}
+                </div>
+              );
+            })}
+          </div>
+          <span className="stage-sub">
+            input
+            <br />
+            81 tokens · 0=[mask]
+          </span>
+        </div>
+
+        <Arrow label="embed + t" />
+
+        {/* model */}
+        <div className="stage">
+          <div className="dit" aria-hidden="true">
+            <span className="dit-name">SudokuDiT</span>
+            {[0, 1, 2, 3].map((n) => (
+              <div key={n} className="dit-layer" />
+            ))}
+          </div>
+          <span className="stage-sub">
+            token+pos+box
+            <br />
+            ×4 DiT · d=128
+          </span>
+        </div>
+
+        <Arrow label="softmax" />
+
+        {/* per-cell estimate */}
+        <div className="stage">
+          <div className="estimate" aria-hidden="true">
+            <div className="bars">
+              {probs.map((p, j) => (
+                <div key={j} className="barcol">
+                  <div className="bartrack">
+                    <div
+                      className="barfill"
+                      style={{
+                        height: `${Math.max(4, Math.round(p * 100))}%`,
+                        background: j + 1 === step.d ? tintBright(step.conf) : 'var(--line)',
+                      }}
+                    />
+                  </div>
+                  <span className={`barlab${j + 1 === step.d ? ' on' : ''}`}>{j + 1}</span>
+                </div>
+              ))}
             </div>
-          );
-        })}
+            <div className="pred">
+              <span className="pred-k">argmax →</span>
+              <span className="pred-d" style={{ color: tintBright(step.conf) }}>
+                {step.d}
+              </span>
+              <span className="pred-c">{Math.round(step.conf * 100)}%</span>
+            </div>
+          </div>
+          <span className="stage-sub">
+            estimate · p(digit)
+            <br />
+            per cell, 9-way
+          </span>
+        </div>
       </div>
 
-      <div className="schema-text">
-        <h3>How it works</h3>
-        <p className="schema-phase">
-          {solved ? (
-            <>
-              <span className="k">complete ✓</span> — re-reads and repeats
-            </>
-          ) : s.phase === 'predict' ? (
-            <>
-              <span className="k">predict</span> — score every empty cell by confidence
-            </>
-          ) : (
-            <>
-              <span className="k">reveal</span> — fill the cell it&apos;s most sure of
-            </>
-          )}
-        </p>
-        <p className="schema-sub">
-          A masked-diffusion solve: the model scores all blank cells at once, fills the surest
-          (blue&nbsp;→&nbsp;green = its confidence), then re-reads the board and repeats — most-confident
-          cells first, MaskGIT-style.
-        </p>
-      </div>
+      <p className="schema-phase">
+        {solved ? (
+          <>
+            <span className="k">complete ✓</span> — re-reads the board and repeats
+          </>
+        ) : (
+          <>
+            reading the whole board, the denoiser estimates <span className="k">p(digit)</span> for every empty
+            cell, then fills its <span className="k">argmax</span> — surest first, MaskGIT-style.
+          </>
+        )}
+      </p>
     </section>
+  );
+}
+
+function Arrow({ label }: { label: string }) {
+  return (
+    <div className="arrow" aria-hidden="true">
+      <span className="arrow-line">→</span>
+      <span className="arrow-lab">{label}</span>
+    </div>
   );
 }
