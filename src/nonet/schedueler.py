@@ -1,3 +1,5 @@
+import math
+
 import torch
 from torch import nn
 
@@ -22,6 +24,29 @@ class LinearScheduler(nn.Module):
 
     def d_alpha(self, t: torch.Tensor) -> torch.Tensor:
         return -torch.ones_like(t)
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        return self.alpha(t)
+
+
+class CosineScheduler(nn.Module):
+    """Cosine (MaskGIT-style) masking schedule.
+
+        alpha_t     = cos(pi/2 * t)     probability a token is *kept* (clean)
+        1 - alpha_t = 1 - cos(pi/2 * t) probability a token is [MASK]
+
+    Like :class:`LinearScheduler` it runs ``alpha`` from 1 (t=0, clean) to 0 (t=1,
+    fully masked), but the cosine bends the curve so the schedule spends *more* of its
+    range at low mask ratios -- i.e. training samples more near-complete boards and
+    fewer almost-empty ones. ``d_alpha`` is its time derivative (unused by the current
+    unweighted loss, kept for parity with the schedule interface / weighted NELBO).
+    """
+
+    def alpha(self, t: torch.Tensor) -> torch.Tensor:
+        return torch.cos(0.5 * math.pi * t)
+
+    def d_alpha(self, t: torch.Tensor) -> torch.Tensor:
+        return -0.5 * math.pi * torch.sin(0.5 * math.pi * t)
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         return self.alpha(t)
