@@ -54,6 +54,86 @@ header p {
   margin-right: 16px;
 }
 
+/* ---- how-it-works schematic ---- */
+.schema {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-top: 24px;
+  padding: 16px 18px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.schema-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  width: 132px;
+  aspect-ratio: 1;
+  background: var(--line);
+  border: 2px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.scell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel);
+  color: #e6edf3;
+  font-weight: 600;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+  aspect-ratio: 1;
+  transition: background 250ms ease, opacity 250ms ease;
+}
+.scell.given {
+  background: var(--clue);
+  color: var(--muted);
+}
+.scell.masked {
+  color: #aeb6c2;
+}
+.scell.cand {
+  animation: schema-pulse 1.1s ease-in-out infinite;
+}
+@keyframes schema-pulse {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 2px rgba(88, 166, 255, 0.45);
+  }
+  50% {
+    box-shadow: inset 0 0 0 2px rgba(88, 166, 255, 1);
+  }
+}
+.schema-text {
+  flex: 1 1 240px;
+  min-width: 220px;
+}
+.schema-text h3 {
+  margin: 0 0 6px;
+  font-size: 0.95rem;
+}
+.schema-phase {
+  margin: 0;
+  font-size: 0.86rem;
+  color: var(--text);
+  min-height: 1.4em;
+}
+.schema-phase .k {
+  color: var(--accent);
+  font-weight: 600;
+}
+.schema-sub {
+  margin: 8px 0 0;
+  font-size: 0.76rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .layout {
   display: flex;
   flex-wrap: wrap;

@@ -16,6 +16,19 @@ function tint(p: number): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// ---- "how it works" schematic: a tiny 3x3 illustration of the decode loop ----
+// (not a real Sudoku unit — just shows predict-confidence -> reveal-surest -> repeat)
+const SCHEMA_GIVEN: Record<number, number> = { 0: 5, 2: 9, 6: 4 };
+// masked cells in the order the model reveals them (most confident first)
+const SCHEMA_STEPS: { i: number; d: number; conf: number }[] = [
+  { i: 4, d: 7, conf: 0.99 },
+  { i: 7, d: 2, conf: 0.96 },
+  { i: 1, d: 8, conf: 0.92 },
+  { i: 5, d: 1, conf: 0.86 },
+  { i: 3, d: 6, conf: 0.79 },
+  { i: 8, d: 3, conf: 0.71 },
+];
+
 const rowOf = (i: number) => Math.floor(i / 9);
 const colOf = (i: number) => i % 9;
 const boxOf = (i: number) => Math.floor(rowOf(i) / 3) * 3 + Math.floor(colOf(i) / 3);
@@ -248,6 +261,8 @@ export default function Page() {
         </div>
       </header>
 
+      <HowItWorks />
+
       <div className="layout">
         <div className="boardcol">
           <Board
@@ -479,5 +494,85 @@ function NumberPad({
         ⌫
       </button>
     </div>
+  );
+}
+
+// Looping schematic of the solve: each cycle scores the empty cells, then
+// reveals the most-confident one — exactly what the real decoder does.
+function HowItWorks() {
+  const L = SCHEMA_STEPS.length;
+  const [s, setS] = useState<{ m: number; phase: 'predict' | 'reveal' }>({ m: 0, phase: 'predict' });
+
+  useEffect(() => {
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (reduce) {
+      setS({ m: L, phase: 'reveal' }); // show the finished grid, no motion
+      return;
+    }
+    const id = setInterval(() => {
+      setS((p) => {
+        if (p.m >= L) return { m: 0, phase: 'predict' }; // restart after the hold
+        if (p.phase === 'predict') return { m: p.m, phase: 'reveal' };
+        return { m: p.m + 1, phase: 'predict' };
+      });
+    }, 760);
+    return () => clearInterval(id);
+  }, [L]);
+
+  const solved = s.m >= L;
+
+  return (
+    <section className="schema" aria-label="how the model works">
+      <div className="schema-grid" aria-hidden="true">
+        {Array.from({ length: 9 }, (_, i) => {
+          if (i in SCHEMA_GIVEN) {
+            return (
+              <div key={i} className="scell given">
+                {SCHEMA_GIVEN[i]}
+              </div>
+            );
+          }
+          const k = SCHEMA_STEPS.findIndex((x) => x.i === i);
+          const { d, conf } = SCHEMA_STEPS[k];
+          const revealed = solved || k < s.m || (k === s.m && s.phase === 'reveal');
+          const candidate = !revealed && k === s.m && s.phase === 'predict';
+          const cls = ['scell', revealed ? 'filled' : 'masked'];
+          if (candidate) cls.push('cand');
+          return (
+            <div
+              key={i}
+              className={cls.join(' ')}
+              style={{ background: tint(conf), opacity: revealed || candidate ? 1 : 0.4 }}
+            >
+              {revealed ? d : '?'}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="schema-text">
+        <h3>How it works</h3>
+        <p className="schema-phase">
+          {solved ? (
+            <>
+              <span className="k">complete ✓</span> — re-reads and repeats
+            </>
+          ) : s.phase === 'predict' ? (
+            <>
+              <span className="k">predict</span> — score every empty cell by confidence
+            </>
+          ) : (
+            <>
+              <span className="k">reveal</span> — fill the cell it&apos;s most sure of
+            </>
+          )}
+        </p>
+        <p className="schema-sub">
+          A masked-diffusion solve: the model scores all blank cells at once, fills the surest
+          (blue&nbsp;→&nbsp;green = its confidence), then re-reads the board and repeats — most-confident
+          cells first, MaskGIT-style.
+        </p>
+      </div>
+    </section>
   );
 }
