@@ -1,0 +1,10 @@
+/node_modules
+/.next
+/out
+next-env.d.ts
+*.tsbuildinfo
+.DS_Store
+
+# the repo-root .gitignore has a Python `lib/` rule; keep our app source
+!lib/
+!lib/**
