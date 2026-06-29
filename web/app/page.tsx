@@ -16,6 +16,25 @@ function tint(p: number): string {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const rowOf = (i: number) => Math.floor(i / 9);
+const colOf = (i: number) => i % 9;
+const boxOf = (i: number) => Math.floor(rowOf(i) / 3) * 3 + Math.floor(colOf(i) / 3);
+
+// the row, column, and box indices for unit u (0..8)
+function unit(u: number): { row: number[]; col: number[]; box: number[] } {
+  const row: number[] = [];
+  const col: number[] = [];
+  const box: number[] = [];
+  for (let j = 0; j < 9; j++) {
+    row.push(u * 9 + j);
+    col.push(j * 9 + u);
+    const br = Math.floor(u / 3) * 3 + Math.floor(j / 3);
+    const bc = (u % 3) * 3 + (j % 3);
+    box.push(br * 9 + bc);
+  }
+  return { row, col, box };
+}
+
 // Parse a pasted board into 81 ints (0 = blank). Lenient about formatting:
 // keeps 1-9 as digits and 0/./_/- as blanks, ignores all other chars
 // (whitespace, commas, pipes, newlines). Returns null unless exactly 81 cells.
@@ -28,33 +47,33 @@ function parsePuzzle(text: string): number[] | null {
   return cells.length === N ? cells : null;
 }
 
-// Are the given (non-zero) clues internally consistent — no repeated digit in
-// any row, column, or 3x3 box? (A blank board is trivially valid.)
-function cluesValid(grid: number[]): boolean {
-  const noDup = (idxs: number[]) => {
-    const seen = new Set<number>();
+// Per-cell flag: true if this filled cell repeats a digit within its row,
+// column, or box. Powers the live red conflict highlight.
+function findConflicts(grid: number[]): boolean[] {
+  const bad = new Array(N).fill(false);
+  const mark = (idxs: number[]) => {
+    const at: Record<number, number[]> = {};
     for (const i of idxs) {
       const v = grid[i];
       if (v === 0) continue;
-      if (seen.has(v)) return false;
-      seen.add(v);
+      (at[v] ||= []).push(i);
     }
-    return true;
+    for (const v in at) if (at[v].length > 1) for (const i of at[v]) bad[i] = true;
   };
   for (let u = 0; u < 9; u++) {
-    const row: number[] = [];
-    const col: number[] = [];
-    const box: number[] = [];
-    for (let j = 0; j < 9; j++) {
-      row.push(u * 9 + j);
-      col.push(j * 9 + u);
-      const br = Math.floor(u / 3) * 3 + Math.floor(j / 3);
-      const bc = (u % 3) * 3 + (j % 3);
-      box.push(br * 9 + bc);
-    }
-    if (!noDup(row) || !noDup(col) || !noDup(box)) return false;
+    const { row, col, box } = unit(u);
+    mark(row);
+    mark(col);
+    mark(box);
   }
-  return true;
+  return bad;
+}
+
+// how many of each digit 1..9 are already placed (to fade out finished digits)
+function digitCounts(grid: number[]): number[] {
+  const c = new Array(10).fill(0);
+  for (const v of grid) c[v]++;
+  return c;
 }
 
 export default function Page() {
@@ -95,9 +114,11 @@ export default function Page() {
     };
   }, []);
 
-  const valid = cluesValid(puzzle);
+  const conflicts = findConflicts(puzzle);
+  const valid = !conflicts.some(Boolean);
   const blanks = puzzle.filter((v) => v === 0).length;
   const editable = !running && frame === null;
+  const counts = digitCounts(puzzle);
 
   // drop any in-flight solve and return the board to its editable input state
   const toEdit = useCallback(() => {
@@ -108,6 +129,7 @@ export default function Page() {
 
   const setCell = useCallback((i: number, v: number) => {
     setPuzzle((p) => {
+      if (p[i] === v) return p;
       const q = [...p];
       q[i] = v;
       return q;
@@ -129,9 +151,10 @@ export default function Page() {
 
   const clearBoard = () => {
     setPuzzle(new Array(N).fill(0));
-    setSelected(null);
+    setSelected(0);
     toEdit();
     setStatus('enter a puzzle, then press Solve');
+    boardRef.current?.focus();
   };
 
   const loadPaste = () => {
@@ -146,11 +169,21 @@ export default function Page() {
     setStatus(ready ? 'loaded — press Solve' : status);
   };
 
-  const onCellClick = (i: number) => {
-    if (running) return;
+  const enterEdit = (i: number) => {
     if (frame !== null) setFrame(null); // re-enter edit mode after a solve
     setSelected(i);
     boardRef.current?.focus();
+  };
+
+  const onCellClick = (i: number) => {
+    if (running) return;
+    enterEdit(i);
+  };
+
+  // tap a number-pad key to fill the selected cell (no keyboard needed)
+  const padInput = (v: number) => {
+    if (!editable || selected === null) return;
+    setCell(selected, v);
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -221,16 +254,28 @@ export default function Page() {
             frame={frame}
             puzzle={puzzle}
             selected={selected}
+            conflicts={conflicts}
             editable={editable}
             boardRef={boardRef}
             onCellClick={onCellClick}
             onKeyDown={onKeyDown}
           />
-          <div className="hint">
-            {editable
-              ? 'click a cell, then type 1–9 (0 or ⌫ clears) · or paste a puzzle →'
-              : 'editing the grid? click any cell'}
-          </div>
+
+          {editable && (
+            <>
+              <NumberPad
+                counts={counts}
+                disabled={selected === null}
+                onDigit={padInput}
+                onErase={() => padInput(0)}
+              />
+              <div className="hint">
+                {selected === null
+                  ? 'tap a cell to select it, then tap a number — or use your keyboard / paste'
+                  : 'tap a number to fill · ⌫ clears · arrow keys move · or paste a board →'}
+              </div>
+            </>
+          )}
         </div>
 
         <div className="panel">
@@ -290,7 +335,7 @@ export default function Page() {
           </div>
 
           <div className="field paste-field">
-            <label>or paste your own (81 cells)</label>
+            <label>or paste a board (81 cells)</label>
             <div className="row">
               <input
                 className="paste"
@@ -308,7 +353,7 @@ export default function Page() {
 
           <div className="status">
             {!valid ? (
-              <span className="bad">invalid grid — a digit repeats in a row, column, or box</span>
+              <span className="bad">conflict — the cells in red repeat a digit in a row, column, or box</span>
             ) : (
               <>
                 {status}
@@ -335,6 +380,7 @@ function Board({
   frame,
   puzzle,
   selected,
+  conflicts,
   editable,
   boardRef,
   onCellClick,
@@ -343,6 +389,7 @@ function Board({
   frame: Frame | null;
   puzzle: number[];
   selected: number | null;
+  conflicts: boolean[];
   editable: boolean;
   boardRef: React.RefObject<HTMLDivElement>;
   onCellClick: (i: number) => void;
@@ -352,6 +399,13 @@ function Board({
   const grid = showSolve ? frame!.grid : puzzle;
   const clue = showSolve ? frame!.clue : puzzle.map((v) => v !== 0);
   const conf = showSolve ? frame!.conf : null;
+  const selVal = selected !== null ? grid[selected] : 0;
+
+  // is cell i a peer (same row/col/box) of the selected cell?
+  const isPeer = (i: number) =>
+    selected !== null &&
+    i !== selected &&
+    (rowOf(i) === rowOf(selected) || colOf(i) === colOf(selected) || boxOf(i) === boxOf(selected));
 
   return (
     <div
@@ -361,35 +415,69 @@ function Board({
       onKeyDown={onKeyDown}
     >
       {grid.map((v, i) => {
-        const col = i % 9;
-        const row = Math.floor(i / 9);
         const cls = ['cell'];
-        if (col === 2 || col === 5) cls.push('br');
-        if (row === 2 || row === 5) cls.push('bb');
-        let style: React.CSSProperties | undefined;
+        if (colOf(i) === 2 || colOf(i) === 5) cls.push('br');
+        if (rowOf(i) === 2 || rowOf(i) === 5) cls.push('bb');
+        const style: React.CSSProperties = {};
 
         if (showSolve) {
           if (clue[i]) cls.push('clue');
           else if (v === 0) cls.push('blank');
-          else style = { background: tint(conf![i]), color: '#e6edf3' };
+          else {
+            style.background = tint(conf![i]);
+            style.color = '#e6edf3';
+          }
         } else {
           cls.push('editable');
-          if (i === selected) cls.push('sel');
-          if (v !== 0) cls.push('clue');
-          else cls.push('blank');
+          const sel = i === selected;
+          const same = !sel && v !== 0 && v === selVal;
+          if (sel) cls.push('sel');
+          // backgrounds: selected > same-digit > peer > given clue > blank
+          if (sel) style.background = '#1f2937';
+          else if (same) style.background = '#243349';
+          else if (isPeer(i)) style.background = '#161d2b';
+          else if (v !== 0) style.background = 'var(--clue)';
+          // text: conflicts in red, otherwise normal entered-digit color
+          if (v !== 0) style.color = conflicts[i] ? '#f85149' : 'var(--text)';
         }
 
         return (
-          <div
-            key={i}
-            className={cls.join(' ')}
-            style={style}
-            onClick={() => onCellClick(i)}
-          >
+          <div key={i} className={cls.join(' ')} style={style} onClick={() => onCellClick(i)}>
             {v === 0 ? '' : v}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function NumberPad({
+  counts,
+  disabled,
+  onDigit,
+  onErase,
+}: {
+  counts: number[];
+  disabled: boolean;
+  onDigit: (v: number) => void;
+  onErase: () => void;
+}) {
+  return (
+    <div className="pad">
+      {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((d) => (
+        <button
+          key={d}
+          className={counts[d] >= 9 ? 'done' : ''}
+          disabled={disabled}
+          onClick={() => onDigit(d)}
+          title={counts[d] >= 9 ? `all nine ${d}s placed` : undefined}
+        >
+          {d}
+        </button>
+      ))}
+      <button className="erase" disabled={disabled} onClick={onErase} title="clear cell" aria-label="erase">
+        ⌫
+      </button>
     </div>
   );
 }
