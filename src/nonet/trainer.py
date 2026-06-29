@@ -16,11 +16,13 @@ from nonet.sudokuer import SudokuJudge
 
 def parse_args():
     p = argparse.ArgumentParser(description="Train the SudokuDiT masked-diffusion solver.")
-    p.add_argument("--batch-size", type=int, default=64)
+    p.add_argument("--batch-size", type=int, default=256)
     p.add_argument("--lr", type=float, default=3e-4)
-    p.add_argument("--weight-decay", type=float, default=0.0)
+    p.add_argument("--weight-decay", type=float, default=1e-3)
+    p.add_argument("--label-smoothing", type=float, default=0.0,
+                   help="soften targets (~0.05-0.1) to reduce overconfident predictions")
     p.add_argument("--max-steps", type=int, default=50_000)
-    p.add_argument("--warmup-steps", type=int, default=1_000)
+    p.add_argument("--warmup-steps", type=int, default=200)
     p.add_argument("--log-every", type=int, default=50)
     p.add_argument("--eval-every", type=int, default=1_000)
     p.add_argument("--eval-batches", type=int, default=4)
@@ -33,10 +35,11 @@ def parse_args():
     cond.add_argument("--unconditional", dest="conditional", action="store_false",
                       help="mask anywhere in the solution; learn the full generative model")
     p.set_defaults(conditional=True)
-    # model size
-    p.add_argument("--hidden-size", type=int, default=512)
-    p.add_argument("--num-heads", type=int, default=8)
-    p.add_argument("--num-blocks", type=int, default=12)
+    # model size -- kept small on purpose: bigger models sit at the entropy
+    # floor (loss ~= log 9) for far longer before the plateau breaks.
+    p.add_argument("--hidden-size", type=int, default=128)
+    p.add_argument("--num-heads", type=int, default=4)
+    p.add_argument("--num-blocks", type=int, default=4)
     p.add_argument("--ckpt-dir", type=str, default="checkpoints")
     p.add_argument("--run-dir", type=str, default="runs")
     return p.parse_args()
@@ -126,19 +129,26 @@ def main():
         # unconditional: mask anywhere in the solution (full generative model).
         keep = (puzzles != MASK_TOKEN) if args.conditional else None
 
+        log_now = step % args.log_every == 0
         with accelerator.accumulate(model):
-            loss = solver.loss(solutions, keep=keep)
+            out = solver.loss(solutions, keep=keep, return_metrics=log_now,
+                              label_smoothing=args.label_smoothing)
+            loss, train_metrics = out if log_now else (out, None)
             accelerator.backward(loss)
             optimizer.step()
             lr_sched.step()
             optimizer.zero_grad()
 
-        if step % args.log_every == 0:
+        if log_now:
             loss_val = accelerator.gather(loss.detach()).mean().item()
+            acc_val = train_metrics["cell_acc"]
             accelerator.log(
-                {"train/loss": loss_val, "train/lr": lr_sched.get_last_lr()[0]}, step=step
+                {"train/loss": loss_val, "train/cell_acc": acc_val,
+                 "train/lr": lr_sched.get_last_lr()[0]}, step=step
             )
-            accelerator.print(f"step {step:>7d} | loss {loss_val:.4f}")
+            accelerator.print(
+                f"step {step:>7d} | loss {loss_val:.4f} | cell_acc {acc_val:.3f}"
+            )
 
         if step > 0 and step % args.eval_every == 0:
             metrics, val_iter = evaluate(
