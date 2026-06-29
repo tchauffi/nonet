@@ -147,7 +147,8 @@ class SudokuSolver(nn.Module):
               generator: torch.Generator | None = None,
               return_trace: bool = False,
               constraint_tiebreak: bool = False,
-              tiebreak_eps: float = 0.05) -> torch.Tensor:
+              tiebreak_eps: float = 0.05,
+              conf_threshold: float | None = None) -> torch.Tensor:
         """Solve a puzzle by revealing the most-confident cells first (MaskGIT-style).
 
         Unlike :meth:`sample` (random reveal order), this fills, at each step,
@@ -159,6 +160,14 @@ class SudokuSolver(nn.Module):
         non-zero clues are clamped and never overwritten. ``temperature=0`` is
         greedy argmax; >0 samples the per-cell digit but still *orders* reveals
         by confidence.
+
+        ``conf_threshold`` switches the reveal *count* from the fixed schedule to
+        an adaptive one: each step fills every still-masked cell the model is at
+        least ``conf_threshold`` sure of (always >=1, to guarantee progress), so
+        the number revealed adapts to the board -- forced cells clear fast, hard
+        ones wait for context. In this mode the model is conditioned on the actual
+        masked fraction of the board (faithful for the linear schedule). Pass a
+        generous ``num_steps`` (e.g. 81) as the loop cap.
 
         ``constraint_tiebreak`` makes the reveal order look more like human
         deduction without changing what gets filled: confidences within
@@ -194,7 +203,11 @@ class SudokuSolver(nn.Module):
             if not is_mask.any():
                 break
 
-            logits = self.model(x_t, ts[step].expand(B))          # (B, L, 9)
+            if conf_threshold is None:
+                t_step = ts[step].expand(B)
+            else:  # condition on the board's actual masked fraction (= t for linear)
+                t_step = (is_mask.sum(dim=1).float() / n_blank.clamp(min=1)).clamp(0.0, 1.0)
+            logits = self.model(x_t, t_step)                      # (B, L, 9)
             if temperature > 0:
                 probs = F.softmax(logits / temperature, dim=-1)
                 pred = torch.multinomial(probs.reshape(-1, NUM_DIGITS), 1,
@@ -207,11 +220,16 @@ class SudokuSolver(nn.Module):
             if return_trace and step == 0:
                 init_conf = conf.clamp(min=0.0).detach().cpu()    # clues (-1) -> 0
 
-            # how many cells should be revealed by the end of this step -- the
-            # scheduler's keep-fraction at the next time dictates the unmask rate
-            revealed_target = torch.ceil(n_blank * self.scheduler.alpha(ts[step + 1])).long()
-            already = n_blank - is_mask.sum(dim=1)
-            k = (revealed_target - already).clamp(min=0)          # reveal this step (B,)
+            if conf_threshold is None:
+                # fixed schedule: the scheduler's keep-fraction at the next time
+                # dictates the unmask rate (count revealed by end of this step).
+                revealed_target = torch.ceil(n_blank * self.scheduler.alpha(ts[step + 1])).long()
+                already = n_blank - is_mask.sum(dim=1)
+                k = (revealed_target - already).clamp(min=0)      # reveal this step (B,)
+            else:
+                # adaptive: reveal every masked cell the model is >= threshold sure
+                # of, at least one to guarantee progress; count adapts to the board.
+                k = (is_mask & (conf >= conf_threshold)).sum(dim=1).clamp(min=1)
             if step == num_steps - 1:
                 k = is_mask.sum(dim=1)                             # finish anything left
 

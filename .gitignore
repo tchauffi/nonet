@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# nonet training artifacts (model weights pushed to HF Hub; logs are local-only)
+checkpoints/
+runs/

@@ -30,7 +30,7 @@ class LinearScheduler(nn.Module):
 
 
 class CosineScheduler(nn.Module):
-    """Cosine (MaskGIT-style) masking schedule.
+    """Cosine masking schedule.
 
         alpha_t     = cos(pi/2 * t)     probability a token is *kept* (clean)
         1 - alpha_t = 1 - cos(pi/2 * t) probability a token is [MASK]
