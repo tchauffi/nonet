@@ -152,8 +152,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     p = argparse.ArgumentParser(description="Web UI for the SudokuDiT solver.")
-    p.add_argument("--ckpt", default=None, help="checkpoint .pt (default: newest under checkpoints/)")
-    p.add_argument("--num-heads", type=int, default=4, help="must match training (not stored in ckpt)")
+    p.add_argument("--ckpt", default=None, help="local checkpoint .pt (overrides the Hub model)")
+    p.add_argument("--hf-repo", default=None, help="HF Hub repo to load (default: nonet.hub.DEFAULT_REPO)")
+    p.add_argument("--num-heads", type=int, default=4, help="heads for a local --ckpt (the Hub config carries its own)")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--pool-size", type=int, default=200)
@@ -162,13 +163,24 @@ def main():
                    help="drop puzzles with more blanks (default keeps all, incl. failures)")
     args = p.parse_args()
 
-    ckpt = args.ckpt or newest_checkpoint()
-    if not ckpt:
-        raise SystemExit("no checkpoint found; pass --ckpt or train first")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
     STATE["device"] = device
-    STATE["solver"] = load_solver(ckpt, args.num_heads, device)
+
+    if args.ckpt:                                   # explicit local checkpoint
+        STATE["solver"] = load_solver(args.ckpt, args.num_heads, device)
+        print(f"loaded local checkpoint {args.ckpt}")
+    else:                                           # default: the published Hub model
+        from nonet.hub import DEFAULT_REPO, load_solver as load_hf
+        repo = args.hf_repo or DEFAULT_REPO
+        try:
+            STATE["solver"] = load_hf(repo, device)
+            print(f"loaded model from HF Hub: {repo}")
+        except Exception as exc:                    # fall back to a local checkpoint
+            local = newest_checkpoint()
+            if not local:
+                raise SystemExit(f"could not load Hub repo '{repo}' ({exc}); pass --ckpt or train first")
+            STATE["solver"] = load_solver(local, args.num_heads, device)
+            print(f"Hub load failed ({exc}); using local checkpoint {local}")
     STATE["judge"] = SudokuJudge()
     STATE["pool"] = build_pool(n=args.pool_size, min_blank=args.min_blank, max_blank=args.max_blank)
 

@@ -21,11 +21,21 @@ grey. Generate your own with `scripts/render_gif.py`.*
 ```bash
 uv sync                              # install deps into .venv
 
-# train (small model, ~minutes to break out of the plateau on a GPU)
-uv run python -m nonet.trainer
-
-# watch it solve in the browser (loads the newest checkpoint)
+# watch it solve in the browser — loads the pretrained model from the HF Hub,
+# so no training needed
 uv run python -m nonet.webapp        # then open http://127.0.0.1:8000
+
+# (optional) train your own small model
+uv run python -m nonet.trainer
+```
+
+The pretrained weights live on the Hub at
+[**tchauffi/sudoku-dit**](https://huggingface.co/tchauffi/sudoku-dit) (1.28 M params) and are
+downloaded on demand:
+
+```python
+from nonet.hub import load_solver
+solver = load_solver()               # -> SudokuSolver, ready to .solve(...)
 ```
 
 > The training/eval scripts download `Ritvik19/Sudoku-Dataset` (~17M puzzles) via 🤗
@@ -89,39 +99,46 @@ to TensorBoard under `runs/`. Checkpoints go to `checkpoints/<run>/sudoku_dit_*.
 ## Web demo
 
 ```bash
-uv run python -m nonet.webapp --port 8000           # newest checkpoint
-uv run python -m nonet.webapp --ckpt path/to.pt
+uv run python -m nonet.webapp --port 8000           # pretrained model from the HF Hub
+uv run python -m nonet.webapp --ckpt path/to.pt     # or a local checkpoint
 ```
 
 A single self-contained page (Python stdlib server only) that animates the solve:
 
 - **Confidence heatmap** — each filled cell is tinted and labelled by the model's step-0
-  certainty (red = unsure → green = sure).
+  certainty (blue = unsure → green = sure); red is reserved for cells that disagree with the
+  reference solution.
 - **Solving mode** — *confidence (adaptive)*: a **τ slider** *(default 0.999)*, each step
   fills every cell the model is ≥ τ sure of (lower τ = bolder, fewer steps, more mistakes);
   or *iterative (fixed)*: a **steps slider** for a fixed number of reveal steps.
 - **"obvious cells first"** — a Sudoku-logic tie-break among equally-confident cells.
 - **Difficulty-stratified pool** spanning easy → near-impossible boards, so failures show up.
 
-Useful flags: `--num-heads` (must match training; not stored in the checkpoint),
+Useful flags: `--hf-repo` (Hub repo to load), `--ckpt` (local checkpoint instead),
 `--pool-size`, `--min-blank` / `--max-blank` (default keeps the full difficulty range).
 
 ### Solving programmatically
 
 ```python
 import torch
-from nonet.model import SudokuDiT
-from nonet.pipeline import SudokuSolver
-from nonet.schedueler import LinearScheduler
+from nonet.hub import load_solver
 
-model = SudokuDiT(hidden_size=128, num_heads=4, num_blocks=4)
-model.load_state_dict(torch.load("checkpoints/.../sudoku_dit_final.pt")); model.eval()
-solver = SudokuSolver(model, LinearScheduler())
-
+solver = load_solver()                                     # pretrained, from the Hub
 puzzle = torch.tensor([[int(c) for c in puzzle_string]])   # (1, 81), 0 = blank
 solution = solver.solve(puzzle, conf_threshold=0.999)      # adaptive reveal
 # or: solver.solve(puzzle, num_steps=81)                   # fixed schedule
 ```
+
+### Publishing a model
+
+```bash
+uv run hf auth login                                       # write token, once
+uv run python scripts/push_to_hf.py --ckpt checkpoints/<run>/sudoku_dit_final.pt \
+    --repo <user>/sudoku-dit --num-heads 4
+```
+
+Uploads the weights as `model.safetensors`, a `config.json` (carries the dims, incl.
+`num_heads`), and a model card.
 
 ---
 

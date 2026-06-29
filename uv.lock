@@ -900,6 +900,8 @@ source = { editable = "." }
 dependencies = [
     { name = "accelerate" },
     { name = "datasets" },
+    { name = "huggingface-hub" },
+    { name = "safetensors" },
     { name = "tensorboard" },
     { name = "timm" },
     { name = "torch" },
@@ -908,6 +910,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "pillow" },
     { name = "pytest" },
 ]
 
@@ -915,6 +918,8 @@ dev = [
 requires-dist = [
     { name = "accelerate", specifier = ">=1.14.0" },
     { name = "datasets", specifier = ">=5.0.0" },
+    { name = "huggingface-hub", specifier = ">=0.34.0" },
+    { name = "safetensors", specifier = ">=0.6.0" },
     { name = "tensorboard", specifier = ">=2.20.0" },
     { name = "timm", specifier = ">=1.0.27" },
     { name = "torch", specifier = ">=2.12.1" },
@@ -922,7 +927,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.1.1" }]
+dev = [
+    { name = "pillow", specifier = ">=10.0.0" },
+    { name = "pytest", specifier = ">=9.1.1" },
+]
 
 [[package]]
 name = "numpy"
